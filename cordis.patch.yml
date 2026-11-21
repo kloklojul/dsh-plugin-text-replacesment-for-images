@@ -1,0 +1,10 @@
+- insert:
+    - id: image-to-text
+      name: dsh-image-to-text
+      config:
+        defaultEnabled: false
+        routes: {}
+        # Omit provider/model to use the current agent's selected model.
+        maxOutputTokens: 4096
+        timeoutMs: 180000
+        maxFocusChars: 12000
