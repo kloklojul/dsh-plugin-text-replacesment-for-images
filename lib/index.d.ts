@@ -16,6 +16,8 @@ export interface Config {
     model?: string;
     reasoningEffort?: GenerateOptions['reasoningEffort'];
     maxOutputTokens?: number;
+    retryMaxOutputTokens?: number;
+    failureMode?: 'passthrough' | 'error';
     timeoutMs?: number;
     maxFocusChars?: number;
 }
@@ -27,6 +29,8 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     model: z<string, string, "plain">;
     reasoningEffort: z<string, string, "plain">;
     maxOutputTokens: z<number, number, "defined">;
+    retryMaxOutputTokens: z<number, number, "defined">;
+    failureMode: z<"passthrough" | "error", "passthrough" | "error", "defined">;
     timeoutMs: z<number, number, "defined">;
     maxFocusChars: z<number, number, "defined">;
 }>>, Schemastery.ObjectT<NoInfer<{
@@ -36,6 +40,8 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     model: z<string, string, "plain">;
     reasoningEffort: z<string, string, "plain">;
     maxOutputTokens: z<number, number, "defined">;
+    retryMaxOutputTokens: z<number, number, "defined">;
+    failureMode: z<"passthrough" | "error", "passthrough" | "error", "defined">;
     timeoutMs: z<number, number, "defined">;
     maxFocusChars: z<number, number, "defined">;
 }>>, "plain">;

@@ -1,6 +1,6 @@
 {
   "name": "dsh-image-to-text",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Durable vision-to-text interception for DeepSeek Harness user images and tool screenshots",
   "type": "module",
   "license": "Apache-2.0",

@@ -17,7 +17,7 @@ This targets servers such as StrixFold where an image-bearing request bypasses p
 
 Original user messages and attachment references remain in `image-to-text/archive` events; original tool results remain unchanged in their source events. Image bytes remain in Harness's attachment storage, not in this repository. Files still available to the normal image-reading tool can be inspected again; each new image occurrence receives a fresh observation. There is no automatic attachment-reinspection tool in this version.
 
-Analysis failure, empty output, output truncation, or cancellation stops the step before the coding request. The original image remains in the log. The error appears through Harness's normal turn error reporting. A request may consume vision tokens even if the following step fails.
+If analysis reaches its output cap, the plugin retries once with a larger budget. It never saves a truncated description. If analysis still fails, the default `passthrough` mode sends the original image to the coding model and logs a warning, allowing normal vision to continue. That request may bypass prompt caching. The image remains eligible for conversion on a later step. Set `failureMode: error` to stop the turn instead. User cancellation always stops the turn and never triggers passthrough.
 
 ## Compatibility
 
@@ -58,9 +58,11 @@ Defaults are provided by the bundle. To override them, merge this entry into the
     # Both optional; use the provider ID and model ID registered in Harness.
     # provider: your-vision-provider
     # model: your-vision-model
-    # Optional, only when the vision provider supports this exact effort ID:
+    # Optional explicit override; otherwise a declared off/none effort is preferred.
     # reasoningEffort: none
-    maxOutputTokens: 4096
+    maxOutputTokens: 8192
+    retryMaxOutputTokens: 32768
+    failureMode: passthrough
     timeoutMs: 180000
     maxFocusChars: 12000
 ```
@@ -70,12 +72,14 @@ Defaults are provided by the bundle. To override them, merge this entry into the
 | `routes` | `{}` | Explicit boolean per provider ID and model ID. A Models-page switch changes only this pair. |
 | `defaultEnabled` | `false` | Fallback for pairs without an explicit switch value. Keep false for normal per-model opt-in behavior. |
 | `provider`, `model` | Current agent selection | Override both together to use a dedicated vision model. |
-| `reasoningEffort` | Adapter default | Optional vision-only effort ID; it does not change the coding model's thinking settings. |
-| `maxOutputTokens` | 4096 | Vision output cap, including reasoning when the provider counts it. Allowed: 1–32768. |
-| `timeoutMs` | 180000 | Vision deadline per image, propagated as an abort signal. Allowed: 1–3600000. The adapter must honor cancellation. |
+| `reasoningEffort` | Declared `off`/`none`, otherwise adapter default | Optional vision-only effort ID; it does not change the coding model's thinking settings. Unsupported effort IDs are never guessed. |
+| `maxOutputTokens` | 8192 | Initial vision output cap, including reasoning when the provider counts it. Allowed: 1–32768. |
+| `retryMaxOutputTokens` | 32768 | Output cap for one fresh attempt after truncation. At or below the initial cap disables this retry. |
+| `failureMode` | `passthrough` | Keep the original image in the coding request on analysis failure, or use `error` to stop the turn. |
+| `timeoutMs` | 180000 | Total vision deadline per image, shared by both attempts. Allowed: 1–3600000. The adapter must honor cancellation. |
 | `maxFocusChars` | 12000 | Limit on task/context characters sent with each image. Allowed: 1–100000. |
 
-If a reasoning-heavy vision model reaches the token cap, increase the cap or select a supported lower reasoning effort. Truncated descriptions are deliberately rejected.
+The prompt requests a focused description of at most roughly 500–1500 words. If the vision provider advertises `off` or `none`, image descriptions use it automatically unless explicitly overridden. This avoids spending the description budget on hidden reasoning while leaving the coding model's thinking unchanged. For a gateway whose server defaults to thinking but whose Harness model declares no reasoning controls, configure a separate vision route to the same endpoint with the appropriate effort mapping, and select it with this plugin's `provider`/`model` fields.
 
 Endpoint identity means the **provider route ID** saved in Harness. Two provider IDs with the same model ID have independent switches, even if they point at the same base URL. Editing a base URL while retaining its provider ID retains that route's setting. IDs containing dots or slashes are stored as literal keys.
 

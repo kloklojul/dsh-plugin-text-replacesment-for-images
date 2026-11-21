@@ -22,6 +22,9 @@ const response = (value, kind = 'stop') => [
 class Adapter extends LlmAdapter {
   requests = []
   constructor(script) { super(); this.script = script }
+  async resolveModel(provider, model) {
+    return { provider, id: model, name: model, ...(this.reasoning ? { reasoning: this.reasoning } : {}) }
+  }
   async *stream(options) {
     this.requests.push(options)
     const entry = this.script.shift()
@@ -34,7 +37,7 @@ async function harness(t, script, config = {}, viaLoader = false) {
   const ctx = new Context()
   t.after(() => ctx.fiber.dispose())
   await mountAgentLoopTestDependencies(ctx)
-  const raw = { defaultEnabled: true, ...config }
+  const raw = { defaultEnabled: true, failureMode: 'error', retryMaxOutputTokens: 8192, ...config }
   let pluginFiber
   let update
   if (viaLoader) {
@@ -45,7 +48,7 @@ async function harness(t, script, config = {}, viaLoader = false) {
     const entry = ctx.loader.resolve(id)
     pluginFiber = entry.fiber
     await pluginFiber.await()
-    update = async config => { await entry.update({ config }); await entry.fiber.await() }
+    update = async config => { await entry.update({ config: { ...entry.options.config, ...config } }); await entry.fiber.await() }
   } else {
     pluginFiber = ctx.plugin(plugin, raw)
     await pluginFiber
@@ -293,4 +296,67 @@ test('live switch updates retain projection ownership and apply on the next step
   assert.equal(adapter.requests[3].purpose, undefined)
   assert.equal(hasImage(adapter.requests[3]), true)
   assert.deepEqual(agent.session.deriveMessages()[0], saved)
+})
+
+test('truncated analysis retries once and persists only the complete replacement', async t => {
+  const { agent, adapter } = await harness(t, [response('partial observation', 'max-tokens'), response('complete observation'), response('answer')], {
+    maxOutputTokens: 4096, retryMaxOutputTokens: 32768,
+  })
+  await send(agent, user(image()))
+  assert.deepEqual(adapter.requests.slice(0, 2).map(request => request.maxTokens), [4096, 32768])
+  assert.equal(hasImage(adapter.requests[2]), false)
+  assert.match(JSON.stringify(adapter.requests[2].messages), /complete observation/)
+  assert.doesNotMatch(JSON.stringify(pluginEvents(agent)), /partial observation/)
+})
+
+test('exhausted analysis retries pass the original image through without failing the coding turn', async t => {
+  const { agent, adapter } = await harness(t, [response('partial one', 'max-tokens'), response('partial two', 'max-tokens'), response('native vision answer')], {
+    maxOutputTokens: 4096, retryMaxOutputTokens: 32768, failureMode: 'passthrough',
+  })
+  await send(agent, user(image()))
+  assert.equal(adapter.requests.length, 3)
+  assert.equal(adapter.requests[2].purpose, undefined)
+  assert.equal(hasImage(adapter.requests[2]), true)
+  assert.equal(pluginEvents(agent).length, 0)
+  assert.equal(agent.session.snapshotEvents().filter(e => e.type === 'turn/end').at(-1).data.reason.kind, 'completed')
+})
+
+test('passthrough on analysis failure retains successful descriptions of other images', async t => {
+  const { agent, adapter } = await harness(t, [response('first description'), () => { throw new Error('vision unavailable') }, response('native vision answer')], { failureMode: 'passthrough' })
+  await send(agent, user(image('first.png'), image('second.png')))
+  const main = adapter.requests[2]
+  assert.match(JSON.stringify(main.messages), /first description/)
+  assert.equal(main.messages.flatMap(message => message.content).filter(block => block.type === 'image').length, 1)
+  assert.equal(main.messages.flatMap(message => message.content).find(block => block.type === 'image').attachment.name, 'second.png')
+})
+
+test('vision uses a supported off effort while the coding model retains its default thinking', async t => {
+  const { agent, adapter } = await harness(t, [response('description'), response('answer')])
+  adapter.reasoning = { efforts: [{ id: 'off', name: 'Off' }, { id: 'high', name: 'High' }], defaultEffort: 'high' }
+  await send(agent, user(image()))
+  assert.equal(adapter.requests[0].reasoningEffort, 'off')
+  assert.equal(adapter.requests[1].reasoningEffort, 'high')
+})
+
+test('an explicit vision effort overrides automatic selection of off', async t => {
+  const { agent, adapter } = await harness(t, [response('description'), response('answer')], { reasoningEffort: 'high' })
+  adapter.reasoning = { efforts: [{ id: 'off', name: 'Off' }, { id: 'high', name: 'High' }], defaultEffort: 'high' }
+  await send(agent, user(image()))
+  assert.equal(adapter.requests[0].reasoningEffort, 'high')
+})
+
+test('user cancellation still stops a turn when passthrough is enabled', async t => {
+  let started
+  const ready = new Promise(resolve => { started = resolve })
+  const { agent, adapter } = await harness(t, [async options => {
+    started()
+    await new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }))
+    return []
+  }], { failureMode: 'passthrough' })
+  agent.followup(user(image()))
+  await ready
+  await agent.cancel()
+  await agent.whenIdle()
+  assert.equal(adapter.requests.length, 1)
+  assert.equal(pluginEvents(agent).length, 0)
 })

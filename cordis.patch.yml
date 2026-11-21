@@ -5,6 +5,8 @@
         defaultEnabled: false
         routes: {}
         # Omit provider/model to use the current agent's selected model.
-        maxOutputTokens: 4096
+        maxOutputTokens: 8192
+        retryMaxOutputTokens: 32768
+        failureMode: passthrough
         timeoutMs: 180000
         maxFocusChars: 12000
