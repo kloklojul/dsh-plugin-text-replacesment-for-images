@@ -15,7 +15,7 @@ This targets servers such as StrixFold where an image-bearing request bypasses p
 3. The description replaces the image in the model-visible conversation. Tool result identities and surrounding text remain intact.
 4. The replacement is recorded in the session log and reused on later turns and after restart. Existing descriptions are never regenerated just because another turn arrives.
 
-Original user messages and attachment references remain in `image-to-text/archive` events; original tool results remain unchanged in their source events. Image bytes remain in Harness's attachment storage, not in this repository. Files still available to the normal image-reading tool can be inspected again; each new image occurrence receives a fresh observation. There is no automatic attachment-reinspection tool in this version.
+Original user messages and attachment references remain in `plugin:image-to-text/archive` records; original tool results remain unchanged in their source events. Image bytes remain in Harness's attachment storage, not in this repository. Files still available to the normal image-reading tool can be inspected again; each new image occurrence receives a fresh observation. There is no automatic attachment-reinspection tool in this version.
 
 If analysis reaches its output cap, the plugin retries once with a larger budget. It never saves a truncated description. If analysis still fails, the default `passthrough` mode sends the original image to the coding model and logs a warning, allowing normal vision to continue. That request may bypass prompt caching. The image remains eligible for conversion on a later step. Set `failureMode: error` to stop the turn instead. User cancellation always stops the turn and never triggers passthrough.
 
@@ -91,13 +91,14 @@ Credentials stay in Harness's provider settings. This plugin never reads an `.en
 
 The host plugin registers one global `agent/pre-step` listener. Harness's scope routing allows this listener to observe regular agents and subagents. At each step it captures the selected provider/model's live replacement policy. If enabled, it processes messages admitted through the normal step decision and images already on the session surface, including tool screenshots. Policy fields use Harness's volatile Config references: Models-page changes are durable, revision-fenced settings mutations that preserve the running plugin and projection registration.
 
-Incoming images are archived before their text replacements enter the normal logged user-message channel. Existing surface images use a pure `image-to-text/project` session projection. Frozen `llm/stream` requests are never mutated. Vision requests are tagged with purpose `image-to-text` and go directly through the configured LLM runtime, so they do not recursively run the agent plugin.
+Incoming images are archived before their text replacements enter the normal logged user-message channel. Existing surface images use a pure `plugin:image-to-text/project` session projection. Frozen `llm/stream` requests are never mutated. Vision requests are tagged with purpose `image-to-text` and go directly through the configured LLM runtime, so they do not recursively run the agent plugin.
 
 - Descriptions are lossy. Fine visual details, exact geometry, OCR and visual comparisons can suffer; choose a capable vision model and re-read the original when needed.
 - Existing conversations undergo a one-time prefix change when old images are converted. Later turns reuse the saved text. New screenshots add observations to history, and other sources of changing prompt prefixes can still reduce cache reuse.
 - Each image occurrence costs a vision call. This version does not deduplicate identical files across different messages: the user's task or screenshot meaning may have changed.
 - Images already marked `offloaded` are left alone; their missing observations cannot be recovered from that placeholder.
-- Keep the plugin enabled when resuming sessions containing its tool-result projections. Detached replay consumers must supply `imageToTextProjection` from `dsh-image-to-text/projection`.
+- Both records are written with `appendPluginRecord`, so they are marked `ignorable` and a stored session always reloads. With the plugin loaded, the projection replays the text replacements; without it, the records are skipped and the original images are shown again. Detached replay consumers must supply `imageToTextProjection` from `dsh-image-to-text/projection`.
+- Versions before 0.2.2 wrote `image-to-text/project` and `image-to-text/archive` without the `ignorable` marker. Harness refuses to reload sessions containing those events; rename them to the `plugin:` types and add `"ignorable": true` to recover such sessions.
 - Other plugins that make their own LLM calls or add images after this pre-step listener finishes are outside this interception boundary. Existing in-flight calls are unaffected.
 - The observer prompt treats text in images as untrusted data. This reduces instruction confusion; descriptions do not constitute a security boundary.
 

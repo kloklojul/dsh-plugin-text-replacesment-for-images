@@ -6,11 +6,25 @@ import type { SessionMessageProjection } from '@deepseek-ai/dsh-session/surface'
 export interface Replacement { index: number; description: string }
 export interface Target { seq: SessionSeq; replacements: Replacement[] }
 
+/**
+ * Plugin-owned log records. Harness refuses to reload a stored session that contains an event
+ * type outside its built-in vocabulary unless the event is marked `ignorable`, so both records are
+ * written with `appendPluginRecord`, which stores them under the `plugin:` namespace with that
+ * marker. A reader without this plugin skips them and keeps the original images.
+ */
+export const PROJECT_RECORD = 'plugin:image-to-text/project' as const
+export const ARCHIVE_RECORD = 'plugin:image-to-text/archive' as const
+
+export interface ArchiveRecord { original: UserMessage; replacement: UserMessage }
+
 declare module '@deepseek-ai/dsh-session/types' {
   interface SessionEventMap {
-    /** @messageProjection */
-    'image-to-text/project': { targets: Target[] }
-    'image-to-text/archive': { original: UserMessage; replacement: UserMessage }
+    /** @messageProjection Typed here only so the projection can name it; written as a plugin record. */
+    'plugin:image-to-text/project': { targets: Target[] }
+  }
+  interface PluginRecordMap {
+    'plugin:image-to-text/project': { targets: Target[] }
+    'plugin:image-to-text/archive': ArchiveRecord
   }
 }
 
@@ -36,8 +50,8 @@ export function replaceImages<T extends Message>(message: T, replacements: Repla
   return { ...message, content } as T
 }
 
-export const imageToTextProjection: SessionMessageProjection<'image-to-text/project'> = {
-  type: 'image-to-text/project',
+export const imageToTextProjection: SessionMessageProjection<typeof PROJECT_RECORD> = {
+  type: PROJECT_RECORD,
   project(event, context) {
     if (!event.data || !Array.isArray(event.data.targets) || !event.data.targets.length) {
       throw new Error('image-to-text: targets must be nonempty')

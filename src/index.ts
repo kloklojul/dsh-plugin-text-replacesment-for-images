@@ -3,9 +3,9 @@ import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-agent'
 import type { Agent, ModelSelection } from '@deepseek-ai/dsh-agent'
 import type { GenerateOptions, ImageBlock, Message, UserMessage } from '@deepseek-ai/dsh-llm'
-import type {} from '@deepseek-ai/dsh-session'
-import type { Replacement, Target } from './projection.js'
-import { imageToTextProjection, replaceImages } from './projection.js'
+import { appendPluginRecord, pluginRecordOf } from '@deepseek-ai/dsh-session'
+import type { ArchiveRecord, Replacement, Target } from './projection.js'
+import { ARCHIVE_RECORD, PROJECT_RECORD, imageToTextProjection, replaceImages } from './projection.js'
 import { isReplacementEnabled } from './policy.js'
 import type { ModelRoutes } from './policy.js'
 
@@ -162,7 +162,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     }
     signal.throwIfAborted()
     if (session.surface.contentGeneration !== generation) throw new Error('image-to-text: session changed during analysis; retry the step')
-    if (targets.length) session.append('image-to-text/project', { targets })
+    if (targets.length) appendPluginRecord(session, PROJECT_RECORD, { targets })
 
     const messages: UserMessage[] = []
     for (const original of decision.messages) {
@@ -176,7 +176,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       signal.throwIfAborted()
       if (!descriptions.length) { messages.push(original); continue }
       const replacement = replaceImages(original, descriptions)
-      session.append('image-to-text/archive', { original, replacement })
+      appendPluginRecord(session, ARCHIVE_RECORD, { original, replacement })
       messages.push(replacement)
     }
     return { ...decision, messages }
@@ -187,7 +187,11 @@ function findArchive(agent: Agent, original: UserMessage): UserMessage | undefin
   // Compare the full message, not only its ID: edits with reused IDs need fresh observations.
   const key = JSON.stringify(original)
   for (const event of agent.session.snapshotEvents()) {
-    if (event.type === 'image-to-text/archive' && JSON.stringify(event.data.original) === key) return event.data.replacement
+    const record = pluginRecordOf(event)
+    if (record?.type !== ARCHIVE_RECORD) continue
+    // Stored records carry whatever an earlier build wrote; check the shape before use.
+    const data = record.data as Partial<ArchiveRecord> | null
+    if (data?.original && data.replacement && JSON.stringify(data.original) === key) return data.replacement
   }
   return undefined
 }

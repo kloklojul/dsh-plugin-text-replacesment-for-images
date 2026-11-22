@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { LlmAdapter, createUserMessage, createAssistantMessage, createToolResultMessage } from '@deepseek-ai/dsh-llm'
-import { Session } from '@deepseek-ai/dsh-session'
+import { KNOWN_SESSION_EVENT_TYPES, Session, appendPluginRecord } from '@deepseek-ai/dsh-session'
 import { mountAgentLoopTestDependencies, mountAgentLoopTestHarness } from '@deepseek-ai/dsh-agent-loop-testkit'
 import * as plugin from '../lib/index.js'
 import { imageToTextProjection, replaceImages } from '../lib/projection.js'
@@ -64,7 +64,15 @@ async function send(agent, message) {
   agent.followup(message)
   await agent.whenIdle()
 }
-const pluginEvents = agent => agent.session.snapshotEvents().filter(e => e.type.startsWith('image-to-text/'))
+const pluginEvents = agent => agent.session.snapshotEvents().filter(e => e.type.startsWith('plugin:image-to-text/'))
+// Harness's persistence read path refuses a stored session containing an event type outside its built-in
+// vocabulary unless the event is marked ignorable. In-memory Session.create() restores skip that check.
+const assertReloadable = agent => {
+  for (const event of agent.session.snapshotEvents()) {
+    assert.ok(KNOWN_SESSION_EVENT_TYPES.has(event.type) || event.ignorable === true,
+      `event "${event.type}" (seq ${event.seq}) would make the stored session unloadable`)
+  }
+}
 
 test('user upload is described once; original retained; later turns remain text-only', async t => {
   const { agent, adapter } = await harness(t, [response('Four cedar posts and a blue roof.'), response('answer'), response('second answer')])
@@ -78,8 +86,9 @@ test('user upload is described once; original retained; later turns remain text-
   assert.match(JSON.stringify(adapter.requests[1].messages), /Four cedar posts/)
   assert.equal(JSON.stringify(adapter.requests[1].messages).match(/Four cedar posts/g).length, 1, 'delta and final block must not duplicate text')
   const archive = pluginEvents(agent)[0]
-  assert.equal(archive.type, 'image-to-text/archive')
+  assert.equal(archive.type, 'plugin:image-to-text/archive')
   assert.ok(archive.data.original.content.some(b => b.type === 'image'))
+  assertReloadable(agent)
   await send(agent, user(text('Now adjust the sun')))
   assert.equal(adapter.requests.length, 3)
   assert.equal(hasImage(adapter.requests[2]), false)
@@ -109,8 +118,14 @@ test('tool screenshots are projected before the following main call', async t =>
   assert.equal(projected.id, source.data.message.id)
   assert.equal(projected.toolCallId, 'call-1')
   assert.ok(projected.content.every(b => b.type !== 'image'))
-  const restored = Session.create('restored-tool', agent.session.snapshotEvents(), undefined, undefined, [imageToTextProjection])
+  assertReloadable(agent)
+  // Round-trip through JSON as the persistence layer does.
+  const stored = JSON.parse(JSON.stringify(agent.session.snapshotEvents()))
+  const restored = Session.create('restored-tool', stored, undefined, undefined, [imageToTextProjection])
   assert.deepEqual(restored.deriveMessages(), agent.session.deriveMessages())
+  // A reader without this plugin skips the ignorable record and keeps the original screenshot.
+  const withoutPlugin = Session.create('restored-without-plugin', stored)
+  assert.ok(withoutPlugin.deriveEventMessage(withoutPlugin.eventAt(source.seq)).content.some(b => b.type === 'image'))
 })
 
 test('multiple images are handled sequentially and retain order', async t => {
@@ -145,7 +160,8 @@ test('a screenshot produced by a real executed tool is intercepted within the sa
   assert.equal(adapter.requests[1].tools, undefined)
   assert.equal(hasImage(adapter.requests[2]), false)
   assert.match(JSON.stringify(adapter.requests[2].messages), /displaced roof/)
-  assert.equal(pluginEvents(agent)[0].type, 'image-to-text/project')
+  assert.equal(pluginEvents(agent)[0].type, 'plugin:image-to-text/project')
+  assertReloadable(agent)
 })
 
 test('a previously archived admission is reused without another vision call', async t => {
@@ -226,12 +242,12 @@ test('projection preserves identity and rejects invalid targets atomically', () 
   const session = Session.create('projection', undefined, undefined, undefined, [imageToTextProjection])
   const source = session.append('user/message', user(text('before'), image(), text('after')), { surfaceOp: 'append' })
   const before = session.deriveMessages()
-  assert.throws(() => session.append('image-to-text/project', { targets: [
+  assert.throws(() => appendPluginRecord(session, 'plugin:image-to-text/project', { targets: [
     { seq: source.seq, replacements: [{ index: 0, description: 'valid' }] },
     { seq: 999, replacements: [{ index: 0, description: 'invalid' }] },
   ] }))
   assert.deepEqual(session.deriveMessages(), before)
-  session.append('image-to-text/project', { targets: [{ seq: source.seq, replacements: [{ index: 0, description: 'A roof' }] }] })
+  appendPluginRecord(session, 'plugin:image-to-text/project', { targets: [{ seq: source.seq, replacements: [{ index: 0, description: 'A roof' }] }] })
   assert.equal(session.deriveMessages()[0].id, before[0].id)
   assert.equal(before[0].content[1].type, 'image')
   assert.equal(session.deriveMessages()[0].content[1].type, 'text')
@@ -281,11 +297,12 @@ test('live switch updates retain projection ownership and apply on the next step
     response('normal image turn'), response('saved observation'), response('converted turn'), response('normal again'),
   ], { defaultEnabled: false }, true)
   const reference = pluginFiber.effectiveConfig.routes
-  const projection = ctx.sessions.messageProjections.find(p => p.type === 'image-to-text/project')
+  const projection = ctx.sessions.messageProjections.find(p => p.type === 'plugin:image-to-text/project')
+  assert.ok(projection)
   await send(agent, user(image()))
   await update({ defaultEnabled: false, routes: { mock: { main: true } } })
   assert.equal(pluginFiber.effectiveConfig.routes, reference, 'toggle must update the stable volatile reference')
-  assert.equal(ctx.sessions.messageProjections.find(p => p.type === 'image-to-text/project'), projection)
+  assert.equal(ctx.sessions.messageProjections.find(p => p.type === 'plugin:image-to-text/project'), projection)
   await send(agent, user(text('Continue')))
   assert.equal(adapter.requests[1].purpose, 'image-to-text')
   assert.equal(hasImage(adapter.requests[2]), false)
